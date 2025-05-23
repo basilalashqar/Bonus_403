@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+#=====================================================================
+# pyArchSim
+#=====================================================================
+#   A very light cycle-level Microarchitecture Simulator.
+#
+# Author\ Khalid Al-Hawaj
+# Date  \ 26 April 2025
+
+import argparse
+import os
+import sys
+
+#--------------------
+# Modify Import Path
+#--------------------
+ROOT_INDICATOR = '.__PYTHON_ROOT__'
+root_dir = os.path.dirname(os.path.abspath(__file__))
+while root_dir and root_dir != '/':
+    if os.path.exists(os.path.join(root_dir, ROOT_INDICATOR)):
+        sys.path.insert(0, root_dir)
+        break
+    root_dir = os.path.dirname(root_dir)
+
+if not os.path.exists(os.path.join(root_dir, ROOT_INDICATOR)):
+    print('ERROR: Cannot find the Python root')
+else:
+    print(f'INFO: Set root_dir to "{root_dir}"')
+
+#--------------------
+# Imports from pyArchSim
+#--------------------
+from pyArchSimLib.arch.isa import mips32
+from pyArchSimLib.arch     import assembler
+from pyArchSimLib.system   import BasicSystem
+
+#--------------------
+# Setup argument parser
+#--------------------
+parser = argparse.ArgumentParser(
+    prog='pasim',
+    description='An Educational Architectural Simulator Written in Python',
+    epilog='By Khalid Al-Hawaj'
+)
+parser.add_argument('asm_file')
+parser.add_argument('-m', '--max-num-cycles', type=int, default=1_000_000)
+parser.add_argument('-l', '--linetrace', action='store_true')
+parser.add_argument('-f', '--linetrace-file', type=str)
+
+# Cache configuration
+parser.add_argument('--cache', choices=['none','direct'], default='none',
+                    help='Choose cache type: none or direct-mapped')
+parser.add_argument('--cache-size', type=int, default=64*1024,
+                    help='Total cache size in bytes')
+parser.add_argument('--line-size', type=int, default=64,
+                    help='Cache line size in bytes')
+parser.add_argument('--hit-latency', type=int, default=1,
+                    help='Hit latency in cycles for the direct-mapped cache')
+
+# Main memory latency
+parser.add_argument('--mem-latency', type=int, default=10,
+                    help='Access latency (cycles) of main memory')
+
+# Branch predictor
+parser.add_argument('--bp', choices=['none','gshare'], default='none',
+                    help='Branch predictor: none or gshare')
+parser.add_argument('--bp-history-bits', type=int, default=10,
+                    help='Global history register bits for GShare')
+
+args = parser.parse_args()
+
+#--------------------
+# Linetrace setup
+#--------------------
+ltEnable   = args.linetrace
+ltFilename = args.linetrace_file
+ltFile     = open(ltFilename, 'w') if ltFilename else None
+
+#--------------------
+# Instantiate system
+#--------------------
+system = BasicSystem(
+    doLinetrace       = ltEnable,
+    cache_type        = args.cache,
+    cache_size        = args.cache_size,
+    line_size         = args.line_size,
+    hit_latency       = args.hit_latency,
+    mem_latency       = args.mem_latency,
+    bp_type           = args.bp,
+    bp_history_bits   = args.bp_history_bits
+)
+
+#--------------------
+# Assemble & load
+#--------------------
+assemblerObj = assembler(mips32)
+with open(args.asm_file, 'r') as f:
+    raw_asm = f.readlines()
+elf = assemblerObj.assemble(raw_asm)
+system.loader(elf)
+
+#--------------------
+# Simulation loop
+#--------------------
+cycle      = 0
+tot_cycles = 0
+tot_insts  = 0
+roi_cycles = 0
+roi_insts  = 0
+
+# Print linetrace header if enabled
+if ltEnable:
+    header = (
+        '+----------+------------+----------+----------+----------+----------+----------+-----+\n'
+        '| Cycle    | Fetch      | Decode   | Execute  | Memory   | Complete |          | Mem |\n'
+        '+----------+------------+----------+----------+----------+----------+----------+-----+\n'
+    )
+    if ltFile:
+        ltFile.write(header)
+    else:
+        print(header, end='')
+
+while cycle < args.max_num_cycles:
+    isROI = system.roiFlag()
+
+    system.tick()
+    lt = system.linetrace()
+
+    if isROI and system.instCompletionFlag():
+        roi_insts += 1
+    if system.instCompletionFlag():
+        tot_insts += 1
+    if isROI:
+        roi_cycles += 1
+    tot_cycles += 1
+
+    if ltEnable:
+        entry = f'{cycle:>10d} | {lt}\n'
+        if ltFile:
+            ltFile.write(entry)
+        else:
+            print(entry, end='')
+
+    exit_cond, _ = system.getExitStatus()
+    if exit_cond:
+        print()
+        print(' + Overall Total Statistics:')
+        print(f'     - Total Number of Cycles = {tot_cycles}')
+        print(f'     - Total Number of Completed Instructions = {tot_insts}')
+        print(f'     - Average IPC = {tot_insts/tot_cycles:.2f}')
+        print(f'     - Average CPI = {tot_cycles/tot_insts:.2f}\n')
+        if roi_cycles:
+            print(' + ROI Statistics:')
+            print(f'     - ROI Number of Cycles = {roi_cycles}')
+            print(f'     - ROI Number of Completed Instructions = {roi_insts}')
+            print(f'     - ROI Average IPC = {roi_insts/roi_cycles:.2f}')
+            print(f'     - ROI Average CPI = {roi_cycles/roi_insts:.2f}\n')
+        if args.bp == 'gshare':
+            print(system.proc.core.bp.report())
+        break
+
+    cycle += 1
+
