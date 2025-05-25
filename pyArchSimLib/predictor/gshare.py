@@ -2,7 +2,7 @@
 # --------------------------------------------------------------------
 # A simple GShare branch predictor with 2-bit saturating counters.
 #
-# Author\ ChatGPT
+# 
 # Date  \ 23 May 2025
 
 class GSharePredictor:
